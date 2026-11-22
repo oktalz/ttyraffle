@@ -2,243 +2,155 @@ package main
 
 import (
 	"bufio"
+	"fmt"
 	"math/rand"
 	"os"
-	"regexp"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/charmbracelet/bubbles/progress"
 )
 
-func readUsers(filename string) error {
+func cleanName(name string) string {
+	return strings.TrimSpace(strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, name))
+}
+
+func (m *model) readUsers(filename string) error {
 	file, err := os.Open(filename)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
-
+	var users []User
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
-		m.users = append(m.users, User{Name: scanner.Text()})
-		m.users[len(m.users)-1].progress = progress.New(progress.WithDefaultGradient())
-		m.users[len(m.users)-1].progress.Init()
+		name := cleanName(scanner.Text())
+		if name != "" {
+			users = append(users, User{Name: name, progress: progress.New(progress.WithDefaultGradient())})
+		}
 	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	if len(users) == 0 {
+		return fmt.Errorf("%s contains no items", filename)
+	}
+	rand.Shuffle(len(users), func(i, j int) { users[i], users[j] = users[j], users[i] })
+	m.users = users
+	m.reset()
 	m.recalculateMaxNameLen()
-	for i := range m.users {
-		m.users[i].progress.Width = m.w - padding*2 - 4 - m.maxNameLen - 1
-	}
-	// randomise users
-	for i := len(m.users) - 1; i > 0; i-- {
-		j := rand.Intn(i)
-		m.users[i], m.users[j] = m.users[j], m.users[i]
-	}
-
-	return scanner.Err()
+	return nil
 }
 
-func updateUsers(m *model) {
-	switch m.state {
-	case StateWaiting:
-		animationDone := true
-		dtStart := time.Now()
-		for animationDone && time.Since(dtStart) < 1*time.Second {
-			for i := range m.users {
-				if m.users[i].progress.IsAnimating() {
-					animationDone = false
-					break
-				}
-			}
-			time.Sleep(50 * time.Millisecond)
+func (m *model) reset() {
+	for i := range m.users {
+		m.users[i].Removed = false
+		m.users[i].Percentage = 0
+		m.users[i].progress = progress.New(progress.WithDefaultGradient())
+	}
+	m.winner = -1
+	m.state = StatePaused
+	m.err = nil
+	m.recalculateMaxNameLen()
+}
+
+func (m *model) start(skip bool) {
+	if m.state != StatePaused {
+		return
+	}
+	if m.winner >= 0 && !skip {
+		m.users[m.winner].Removed = true
+	}
+	m.winner = -1
+	active := false
+	nextState := StateRunning
+	for i := range m.users {
+		m.users[i].Percentage = 0
+		active = active || !m.users[i].Removed
+		if m.users[i].progress.Percent() != 0 || m.users[i].progress.IsAnimating() {
+			nextState = StateResetting
 		}
+	}
+	if active {
+		m.state = nextState
+		m.lastUserUpdate = time.Time{}
+	}
+}
+
+func updateUsers(m *model, now time.Time) {
+	switch m.state {
+	case StateResetting:
 		for i := range m.users {
-			if i != m.winner {
-				m.users[i].Percentage = 0
+			if m.users[i].progress.Percent() != 0 || m.users[i].progress.IsAnimating() {
+				return
+			}
+		}
+		m.state = StateRunning
+	case StateWaitProgress:
+		for i := range m.users {
+			if m.users[i].progress.IsAnimating() {
+				return
 			}
 		}
 		m.state = StatePaused
+		m.vp.GotoTop() // reveal the winner banner
 	case StateRunning:
-		if m.winner != -1 {
-			time.Sleep(25 * time.Millisecond)
-			for i := range m.users {
-				if i != m.winner {
-					m.users[i].Percentage = 0
-				}
-			}
-			// remove winner
-			// users = append(users[:m.winner], users[m.winner+1:]...)
-			m.users[m.winner].Removed = true
-			m.users[m.winner].Percentage = 0
-			m.winner = -1
-			m.lastUserUpdate = time.Now()
-		}
-		activeUsers := len(m.users)
+		activeUsers := 0
 		for i := range m.users {
-			if m.users[i].Removed {
-				activeUsers--
+			if !m.users[i].Removed {
+				activeUsers++
 			}
 		}
-		if activeUsers == 0 {
-			m.state = StatePaused
-		}
-
+		// scale pacing so long lists do not take forever
 		waitTime := 125
-		if activeUsers < 1 {
-			waitTime = 500
-		}
 		if activeUsers < 5 {
 			waitTime += 30 * (5 - activeUsers)
 		}
 		if activeUsers > 15 {
 			waitTime += 25 * (activeUsers - 15)
 		}
-
-		if time.Since(m.lastUserUpdate) < time.Duration(waitTime)*time.Millisecond {
+		if activeUsers == 1 {
+			waitTime = 0
+		}
+		if now.Sub(m.lastUserUpdate) < time.Duration(waitTime)*time.Millisecond {
 			return
 		}
-		m.lastUserUpdate = time.Now()
+		m.lastUserUpdate = now
 
+		maxStep := 10
+		if activeUsers > 15 {
+			maxStep += (activeUsers - 15) * 5
+		}
+		var winners []int
 		for i := range m.users {
 			if m.users[i].Removed {
 				continue
 			}
-			if activeUsers < 1 {
+			if activeUsers == 1 {
+				m.users[i].progress.SetSpringOptions(14, 1)
 				m.users[i].Percentage = 100
-				continue
+			} else {
+				m.users[i].Percentage = min(100, m.users[i].Percentage+rand.Intn(maxStep))
 			}
-			if m.users[i].Percentage < 100 {
-				max := 10
-				if activeUsers > 15 {
-					max += (activeUsers - 15) * 5
-				}
-				m.users[i].Percentage += rand.Intn(max)
-				if m.users[i].Percentage > 100 {
-					m.users[i].Percentage = 100
-				}
-			}
-		}
-		// sort users based on current percentage
-		// slices.SortFunc(m.users, func(a, b User) int {
-		// 	viewB := b.progress.View()
-		// 	viewA := a.progress.View()
-		// 	var percentA, percentB int
-		// 	match := re.FindStringSubmatch(viewA)
-		// 	if len(match) > 1 {
-		// 		percentA, _ = strconv.Atoi(match[1])
-		// 	}
-		// 	match = re.FindStringSubmatch(viewB)
-		// 	if len(match) > 1 {
-		// 		percentB, _ = strconv.Atoi(match[1])
-		// 	}
-		// 	return percentB - percentA
-		// })
-		var potentialwinners []int
-		for i := range m.users {
 			if m.users[i].Percentage >= 99 {
-				potentialwinners = append(potentialwinners, i)
+				winners = append(winners, i)
 			}
 		}
-		if len(potentialwinners) > 0 {
-			m.winner = potentialwinners[rand.Intn(len(potentialwinners))]
+		if len(winners) > 0 {
+			m.winner = winners[rand.Intn(len(winners))]
 			m.users[m.winner].Percentage = 100
-			m.state = StateWaitProgress
-			// data.RandomiseUsers()
-		}
-		if len(potentialwinners) > 0 {
-			// set other users to 99
 			for i := range m.users {
 				if i != m.winner && m.users[i].Percentage > 99 {
 					m.users[i].Percentage = 99
 				}
 			}
-		}
-	case StateWaitProgress:
-		uiUpdateDone := true
-		for i := range m.users {
-			if m.users[i].progress.IsAnimating() {
-				uiUpdateDone = false
-				break
-			}
-		}
-		if uiUpdateDone {
-			m.state = StateWaiting
+			m.state = StateWaitProgress
 		}
 	}
 }
-
-var re = regexp.MustCompile(`(\d+)%`)
-
-// func updateUsers() {
-// 	for {
-// 		m.winner := data.winner()
-// 		st := data.State()
-// 		if st == data.StateWaiting {
-// 			time.Sleep(2 * time.Second)
-// 			animationDone := true
-// 			dtStart := time.Now()
-// 			for animationDone && time.Since(dtStart) < 1*time.Second {
-// 				for i := range users {
-// 					if users[i].Progress.IsAnimating() {
-// 						animationDone = false
-// 						break
-// 					}
-// 				}
-// 				time.Sleep(50 * time.Millisecond)
-// 			}
-// 			data.Process(func(users []data.User) {
-// 				for i := range users {
-// 					if i != m.winner {
-// 						users[i].Percentage = 0
-// 					}
-// 				}
-// 			})
-// 			data.StateSet(data.StatePaused)
-// 		}
-// 		if st != data.StateRunning {
-// 			time.Sleep(50 * time.Millisecond)
-// 			continue
-// 		}
-// 		if m.winner != -1 {
-// 			time.Sleep(25 * time.Millisecond)
-// 			data.Process(func(users []data.User) {
-// 				for i := range users {
-// 					if i != m.winner {
-// 						users[i].Percentage = 0
-// 					}
-// 				}
-// 				// remove winner
-// 				// users = append(users[:m.winner], users[m.winner+1:]...)
-// 				users[m.winner].Removed = true
-// 				users[m.winner].Percentage = 0
-// 			})
-// 			data.winnerSet(-1)
-// 			m.winner = -1
-// 		}
-// 		data.Process(func(users []data.User) {
-// 			for i := range users {
-// 				if users[i].Removed {
-// 					continue
-// 				}
-// 				if users[i].Percentage < 100 {
-// 					users[i].Percentage += rand.Intn(3)
-// 					if users[i].Percentage > 100 {
-// 						users[i].Percentage = 100
-// 					}
-// 				}
-// 			}
-// 			var potentialwinners []int
-// 			for i := range users {
-// 				if users[i].Percentage >= 99 {
-// 					potentialwinners = append(potentialwinners, i)
-// 				}
-// 			}
-// 			if len(potentialwinners) > 0 {
-// 				m.winner = potentialwinners[rand.Intn(len(potentialwinners))]
-// 				users[m.winner].Percentage = 100
-// 				data.winnerSet(m.winner)
-// 				data.StateSet(data.StateWaiting)
-// 				// data.RandomiseUsers()
-// 			}
-// 		})
-// 		time.Sleep(25 * time.Millisecond)
-// 	}
-// }

@@ -1,48 +1,44 @@
 package main
 
 import (
-	"slices"
-	"strings"
-	"time"
-
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func (m *model) View() string {
-	currentTime := time.Now().Format("15:04:05")
-	// currentTime += " " + string(m.state)
-	// currentTime = " "
+	return m.view
+}
 
-	if m.state == StatePaused {
-		menu := "(i)nsert (d)elete (r)andomize (s)kip (c)ontinue (q)uit" + " " + currentTime
-		if !m.raceStarted {
-			menu = "(s)tart (i)nsert (d)elete (r)andomize (c)ontinue (q)uit" + " " + currentTime
+func (m *model) renderView() string {
+	menu := "↑↓ scroll · q quit"
+	switch m.state {
+	case StatePaused:
+		menu = "s start/skip · c continue · x reset · i insert · d delete · r shuffle · ↑↓ scroll · q quit"
+		if m.w < 90 {
+			menu = "s/c draw · x reset · i/d edit · r shuffle · ↑↓ · q quit"
 		}
-		border := lipgloss.NormalBorder()
-		repeatCount := m.w - len(menu) - 5
-		if repeatCount < 0 {
-			repeatCount = 0
+		drawn := 0
+		for _, u := range m.users {
+			if u.Removed {
+				drawn++
+			}
 		}
-		border.Bottom = strings.Repeat("─", repeatCount) + " " + menu + " " + "───"
-		return lipgloss.NewStyle().Border(border).Render(m.vp.View())
-	}
-	if slices.Contains([]state{StateChooseFile, StateDeleteUser, StateAddUser}, m.state) {
-		menu := currentTime
-		border := lipgloss.NormalBorder()
-		repeatCount := m.w - len(menu) - 5
-		if repeatCount < 0 {
-			repeatCount = 0
+		if len(m.users) > 0 && drawn == len(m.users) {
+			menu = "all items drawn · x reset · i insert · q quit"
 		}
-		border.Bottom = strings.Repeat("─", repeatCount) + " " + menu + " " + "───"
-		return lipgloss.NewStyle().Border(border).Render(m.vp.View())
+	case StateAddUser:
+		menu = "enter add · esc cancel · ctrl+c quit"
+	case StateChooseFile:
+		menu = "↑↓ select · enter open · q quit"
+	case StateDeleteUser:
+		menu = "↑↓ select · enter delete · esc cancel · q quit"
 	}
-
-	menu := "(q)uit" + " " + currentTime
-	border := lipgloss.NormalBorder()
-	repeatCount := m.w - len(menu) - 5
-	if repeatCount < 0 {
-		repeatCount = 0
+	if m.err != nil {
+		menu = "Error: " + cleanName(m.err.Error())
 	}
-	border.Bottom = strings.Repeat("─", repeatCount) + " " + menu + " " + "───"
-	return lipgloss.NewStyle().Border(border).Render(m.vp.View())
+	content := m.vp.View() + "\n" + ansi.Truncate(menu, m.vp.Width, "…")
+	if m.w < 3 || m.h < 4 {
+		return ansi.Truncate("Resize terminal", m.w, "")
+	}
+	return lipgloss.NewStyle().Border(lipgloss.NormalBorder()).Render(content)
 }

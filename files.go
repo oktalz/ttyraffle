@@ -2,38 +2,28 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 )
 
-func readFiles() {
-	var err error
-	var files []string
-	if len(os.Args) == 2 {
-		files = []string{os.Args[1]}
+func (m *model) readFiles(args []string) error {
+	if len(args) > 1 {
+		return fmt.Errorf("usage: ttyraffle [file.txt]")
 	}
-
+	files := args
 	if len(files) == 0 {
+		var err error
 		files, err = filepath.Glob("*.txt")
 		if err != nil {
-			fmt.Println("Error finding .txt files:", err)
-			os.Exit(1)
+			return err
 		}
 	}
-
-	var userFile string
 	switch len(files) {
 	case 0:
-		fmt.Println("No .txt files found in the current directory.")
-		os.Exit(1)
+		return fmt.Errorf("no .txt files found in the current directory")
 	case 1:
-		userFile = files[0]
-		if err := readUsers(userFile); err != nil {
-			fmt.Println("Error reading users:", err)
-			os.Exit(1)
-		}
+		return m.readUsers(files[0])
 	default:
-		m.state = StateChooseFile
-		m.choices = files
+		m.state, m.choices = StateChooseFile, files
+		return nil
 	}
 }

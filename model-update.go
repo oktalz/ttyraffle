@@ -9,207 +9,154 @@ import (
 )
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmd tea.Cmd
-
+	// Per-bar frames must not redraw the entire list.
+	if _, frame := msg.(progress.FrameMsg); !frame {
+		defer m.updateViewportContent()
+	}
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		if m.state == StateChooseFile {
-			switch msg.String() {
-			case "up":
-				if m.cursor > 0 {
-					m.cursor--
-				}
-			case "down":
-				if m.cursor < len(m.choices)-1 {
-					m.cursor++
-				}
-			case "enter":
-				readUsers(m.choices[m.cursor])
-				m.state = StatePaused
-			}
-			return m, nil
+		key := msg.String()
+		if key == "ctrl+c" || (key == "q" && m.state != StateAddUser) {
+			return m, tea.Quit
 		}
-		if m.state == StateAddUser {
-			switch msg.String() {
+		switch m.state {
+		case StateChooseFile:
+			switch key {
+			case "up":
+				m.cursor = max(0, m.cursor-1)
+			case "down":
+				m.cursor = min(len(m.choices)-1, m.cursor+1)
 			case "enter":
-				if m.textInput.Value() == "" {
-					m.state = StatePaused
-					return m, nil
+				if m.cursor >= 0 && m.cursor < len(m.choices) {
+					m.err = m.readUsers(m.choices[m.cursor])
+					if m.err == nil {
+						m.vp.GotoTop()
+					}
 				}
-				m.users = append(m.users, User{Name: m.textInput.Value()})
-				m.recalculateMaxNameLen()
-				m.users[len(m.users)-1].progress = progress.New(progress.WithDefaultGradient())
-				for i := range m.users {
-					m.users[i].progress.Width = m.w - padding*2 - 4 - m.maxNameLen - 1
+			}
+			m.keepSelectionVisible()
+			return m, nil
+		case StateAddUser:
+			switch key {
+			case "enter":
+				if name := cleanName(m.textInput.Value()); name != "" {
+					m.users = append(m.users, User{Name: name, progress: progress.New(progress.WithDefaultGradient())})
+					m.recalculateMaxNameLen()
 				}
 				m.textInput.Reset()
 				m.state = StatePaused
-				return m, nil
+			case "esc":
+				m.textInput.Reset()
+				m.state = StatePaused
+			default:
+				var cmd tea.Cmd
+				m.textInput, cmd = m.textInput.Update(msg)
+				return m, cmd
+			}
+			return m, nil
+		case StateDeleteUser:
+			switch key {
+			case "up":
+				m.selectedUser = max(0, m.selectedUser-1)
+			case "down":
+				m.selectedUser = min(len(m.users)-1, m.selectedUser+1)
+			case "enter":
+				if m.selectedUser >= 0 && m.selectedUser < len(m.users) {
+					m.users = append(m.users[:m.selectedUser], m.users[m.selectedUser+1:]...)
+					if m.winner == m.selectedUser {
+						m.winner = -1
+					} else if m.winner > m.selectedUser {
+						m.winner--
+					}
+					m.recalculateMaxNameLen()
+				}
+				m.state = StatePaused
 			case "esc":
 				m.state = StatePaused
+			}
+			m.keepSelectionVisible()
+			return m, nil
+		}
+		if m.state == StatePaused {
+			switch key {
+			case "r":
+				rand.Shuffle(len(m.users), func(i, j int) {
+					m.users[i], m.users[j] = m.users[j], m.users[i]
+					if m.winner == i {
+						m.winner = j
+					} else if m.winner == j {
+						m.winner = i
+					}
+				})
+			case "i", "insert":
+				m.state = StateAddUser
+				m.vp.GotoTop()
+				return m, m.textInput.Focus()
+			case "d", "delete":
+				if len(m.users) > 0 {
+					m.state = StateDeleteUser
+					m.selectedUser = 0
+					m.vp.GotoTop()
+				}
+			case "x":
+				m.reset()
+			case "s", "c", " ", "enter":
+				m.start(key == "s")
 				return m, nil
 			}
+		}
+		var cmd tea.Cmd
+		m.vp, cmd = m.vp.Update(msg)
+		return m, cmd
+	case tea.WindowSizeMsg:
+		m.updateSize(msg.Width, msg.Height)
+		m.keepSelectionVisible()
+	case tickMsg:
+		updateUsers(m, time.Time(msg))
+		cmds := []tea.Cmd{tickCmd()}
+		for i := range m.users {
+			percent := float64(m.users[i].Percentage) / 100
+			if m.users[i].progress.Percent() != percent {
+				cmds = append(cmds, m.users[i].progress.SetPercent(percent))
+			}
+		}
+		return m, tea.Batch(cmds...)
+	case progress.FrameMsg:
+		var cmds []tea.Cmd
+		for i := range m.users {
+			updated, cmd := m.users[i].progress.Update(msg)
+			m.users[i].progress = updated.(progress.Model)
+			cmds = append(cmds, cmd)
+		}
+		return m, tea.Batch(cmds...)
+	default:
+		if m.state == StateAddUser {
+			var cmd tea.Cmd
 			m.textInput, cmd = m.textInput.Update(msg)
 			return m, cmd
 		}
-		if m.state == StateDeleteUser {
-			switch msg.String() {
-			case "up":
-				if m.selectedUser > 0 {
-					m.selectedUser--
-				}
-			case "down":
-				if m.selectedUser < len(m.users)-1 {
-					m.selectedUser++
-				}
-			case "enter":
-				m.users = append(m.users[:m.selectedUser], m.users[m.selectedUser+1:]...)
-				m.recalculateMaxNameLen()
-				for i := range m.users {
-					m.users[i].progress.Width = m.w - padding*2 - 4 - m.maxNameLen - 1
-				}
-				m.winner = -1
-				m.state = StatePaused
-			case "esc":
-				m.state = StatePaused
-			}
-			return m, nil
-		}
-		switch msg.String() {
-		case "ctrl+c", "q":
-			m.state = StateExit
-			m.exitTime = time.Now()
-			m.h = m.h - 1
-			// return m, tea.Quit
-			cmd := func() tea.Msg {
-				return tea.WindowSizeMsg{Width: m.w, Height: m.h}
-			}
-			return m, cmd
-		case "r":
-			if m.state != StatePaused {
-				// curently its not safe to do it while running
-				return m, nil
-			}
-			// randomise users in slice
-			for i := len(m.users) - 1; i > 0; i-- {
-				j := rand.Intn(i)
-				m.users[i], m.users[j] = m.users[j], m.users[i]
-				if m.winner == (i) {
-					m.winner = j
-				} else if m.winner == (j) {
-					m.winner = i
-				}
-			}
-			return m, nil
-		case "i", "insert":
-			if m.state != StatePaused {
-				// curently its not safe to do it while running
-				return m, nil
-			}
-			m.state = StateAddUser
-			return m, nil
-		case "d", "delete":
-			if m.state != StatePaused {
-				// curently its not safe to do it while running
-				return m, nil
-			}
-			m.state = StateDeleteUser
-			m.selectedUser = 0
-			return m, nil
-		// case "delete":
-		// 	if m.state != StateRunning {
-		// 		// curently its not safe to do it while running
-		// 		return m, nil
-		// 	}
-		// 	// randomise users in slice
-		// 	Process(func(users []User) {
-		// 		// remove all users that have flag Removed true
-		// 		slices.DeleteFunc(users, func(u User) bool {
-		// 			return u.Removed
-		// 		})
-		// 	})
-		// 	return m, nil
-		case "s", "c", " ", "enter":
-			newState := StateRunning
-			if m.raceStarted && msg.String() == "s" && m.winner != -1 {
-				m.users[m.winner].Percentage = 0
-				m.users[m.winner].progress.SetPercent(0)
-				m.winner = -1
-				m.state = newState
-				return m, tickCmd()
-			}
-
-			if !m.raceStarted {
-				m.raceStarted = true
-				m.state = newState
-				return m, tickCmd()
-			}
-			if m.gameOver {
-
-				if len(m.users) == 0 {
-					return m, tea.Quit
-				}
-
-				m.recalculateMaxNameLen()
-
-				// Reset game
-				m.gameOver = false
-				for i := range m.users {
-					m.users[i].Percentage = 0
-					m.users[i].progress.SetPercent(0)
-				}
-				return m, tickCmd()
-			}
-			m.state = newState
-		}
-		return m, nil
-	case tea.WindowSizeMsg:
-		m.updateSize(msg.Width, msg.Height)
-		return m, nil
-	case tickMsg:
-		if m.state == StateExit {
-			if time.Now().After(m.exitTime) {
-				return m, tea.Quit
-			} else {
-				return m, tickCmd()
-			}
-		}
-		if m.gameOver {
-			return m, nil
-		}
-		// Update progress bars
-		var cmds []tea.Cmd
-		if !m.gameOver {
-			cmds = append(cmds, tickCmd())
-		}
-		updateUsers(m)
-		for i := range m.users {
-			if m.users[i].progress.Percent() == float64(m.users[i].Percentage)/100 {
-				continue
-			}
-			cmds = append(cmds, m.users[i].progress.SetPercent(float64(m.users[i].Percentage)/100))
-		}
-		m.updateViewportContent()
-		return m, tea.Batch(cmds...)
-
-	// FrameMsg is sent when the progress bar wants to animate itself
-	case progress.FrameMsg:
 		var cmd tea.Cmd
-		var cmds []tea.Cmd
-		for i := range m.users {
-			newModel, newCmd := m.users[i].progress.Update(msg)
-			m.users[i].progress = newModel.(progress.Model)
-			cmd = newCmd
-			cmds = append(cmds, cmd)
-		}
-		m.updateViewportContent()
-		return m, tea.Batch(cmds...)
+		m.vp, cmd = m.vp.Update(msg)
+		return m, cmd
+	}
+	return m, nil
+}
 
-	case winnerMsg:
-		m.gameOver = true
-		return m, nil
-
+func (m *model) keepSelectionVisible() {
+	var row int
+	switch m.state {
+	case StateChooseFile:
+		row = m.cursor + 1
+	case StateDeleteUser:
+		row = m.selectedUser + 1
 	default:
-		return m, nil
+		return
+	}
+	m.updateViewportContent()
+	if row < m.vp.YOffset {
+		m.vp.SetYOffset(row)
+	}
+	if row >= m.vp.YOffset+m.vp.Height {
+		m.vp.SetYOffset(row - m.vp.Height + 1)
 	}
 }

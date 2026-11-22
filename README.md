@@ -1,41 +1,57 @@
 ```
-┌┬┐┌─┐┬─┐┌┬┐┬┌┐┌┌─┐┬    ┌─┐┌─┐  ┌─┐┌─┐┬─┐┌┬┐┬ ┬┌┐┌┌─┐
- │ ├┤ ├┬┘│││││││├─┤│    │ │├┤   ├┤ │ │├┬┘ │ │ ││││├┤
- ┴ └─┘┴└─┴ ┴┴┘└┘┴ ┴┴─┘  └─┘└    └  └─┘┴└─ ┴ └─┘┘└┘└─┘
+┌┬┐┌┬┐┬ ┬  ┬─┐┌─┐┌─┐┌─┐┬  ┌─┐
+ │  │ └┬┘  ├┬┘├─┤├┤ ├┤ │  ├┤
+ ┴  ┴  ┴   ┴└─┴ ┴└  └  ┴─┘└─┘
 ```
 
 tool for selecting random person/item from list in terminal
 
-items are stored in txt file
+Entries are read from a text file, one per line. Blank or whitespace-only lines are skipped.
+Duplicate lines count as separate entries. Empty or unreadable files report an error.
+Edits apply only to the current session and never overwrite the file.
 
 ## Installation
 Use the following command to download and install this tool:
 ```sh
-go install github.com/oktalz/terminal-of-fortune@latest
+go install github.com/oktalz/ttyraffle@latest
 ```
 
 ## Binaries
-  prebuilt binaries can be found on [releases](https://github.com/oktalz/terminal-of-fortune/releases) page
+  prebuilt binaries can be found on [releases](https://github.com/oktalz/ttyraffle/releases) page
 
 ## Running
 
 ![Example](demo.gif)
 
 ```sh
-terminal-of-fortune file.txt
+ttyraffle file.txt
 ```
 
 if more txt files exist, start the program and pick correct one.
 if one txt file exists it will be autoselected
 ```sh
-terminal-of-fortune
+ttyraffle
 ```
 
-## limitations
+## Configuration
 
-number of items does not necessarity fit on screen (if to many are in list)
+Optional settings are loaded from `~/.ttyraffle/.env`.
+Move an existing `~/.terminal-of-fortune/.env` there when upgrading.
 
-## todo
+## Controls
 
-- option to remove items that were selected
-- option to sort items by current percentage
+The race list scrolls to accommodate entries that do not fit on screen.
+
+| Key | Action |
+| --- | --- |
+| `s` | Start, or skip the current winner without excluding them |
+| `c`, Space, Enter | Continue, excluding the previous winner |
+| `x` | Reset, restoring all entries |
+| `i` | Insert an entry for this session |
+| `d` | Delete an entry for this session |
+| `r` | Shuffle entries |
+| ↑ / ↓, Page Up / Page Down | Scroll the race list |
+| Arrow keys, Enter | Navigate and confirm selections |
+| Esc | Cancel adding or deleting |
+| Ctrl+C | Exit from any screen |
+| `q` | Exit, except while entering a name |

@@ -10,29 +10,19 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-const (
-	padding = 2
-)
-
-type (
-	tickMsg   time.Time
-	winnerMsg struct{}
-)
+type tickMsg time.Time
 
 type User struct {
 	Name       string
-	Percentage int // 0 to 100
+	Percentage int
 	Removed    bool
 	progress   progress.Model
 }
 
 type model struct {
-	w              int
-	h              int
+	w, h           int
 	vp             viewport.Model
 	maxNameLen     int
-	gameOver       bool
-	raceStarted    bool
 	users          []User
 	winner         int
 	state          state
@@ -41,40 +31,41 @@ type model struct {
 	selectedUser   int
 	choices        []string
 	cursor         int
-	exitTime       time.Time
+	err            error
+	view           string
+}
+
+func newModel() *model {
+	ti := textinput.New()
+	ti.Placeholder = "New item"
+	ti.Focus()
+	ti.CharLimit = 200
+	m := &model{winner: -1, state: StatePaused, textInput: ti, vp: viewport.New(1, 1)}
+	m.updateSize(80, 24)
+	return m
 }
 
 func tickCmd() tea.Cmd {
-	return tea.Tick(15*time.Millisecond, func(t time.Time) tea.Msg {
-		return tickMsg(t)
-	})
+	return tea.Tick(15*time.Millisecond, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
-func (m *model) Init() tea.Cmd {
-	return tickCmd()
-}
+func (m *model) Init() tea.Cmd { return tickCmd() }
 
 func (m *model) recalculateMaxNameLen() {
 	m.maxNameLen = 0
 	for _, u := range m.users {
-		if len(u.Name) > m.maxNameLen {
-			m.maxNameLen = len(u.Name)
-		}
+		m.maxNameLen = max(m.maxNameLen, lipgloss.Width(u.Name))
 	}
-	if m.maxNameLen > 35 {
-		m.maxNameLen = 35
+	m.maxNameLen = min(m.maxNameLen, 35, max(1, (m.w-2)/2))
+	for i := range m.users {
+		m.users[i].progress.Width = max(1, m.w-2-m.maxNameLen-2)
 	}
 }
 
 func (m *model) updateSize(w, h int) {
-	m.w = w
-	m.h = h
-	for i := range m.users {
-		m.users[i].progress.Width = w - padding*2 - 4 - m.maxNameLen - 1 // name + space
-	}
-
-	m.vp = viewport.New(w-2, h-2) // -2 for border
-	m.vp.Style = lipgloss.NewStyle()
-
+	m.w, m.h = max(1, w), max(1, h)
+	m.vp.Width, m.vp.Height = max(1, m.w-2), max(1, m.h-3)
+	m.textInput.Width = max(1, m.w-6)
+	m.recalculateMaxNameLen()
 	m.updateViewportContent()
 }
